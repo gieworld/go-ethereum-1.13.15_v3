@@ -31,6 +31,11 @@ import (
 	"golang.org/x/exp/slices"
 )
 
+const (
+	// ExClique: Enable differential order and other optimizations
+	enableExClique = true
+)
+
 // Vote represents a single vote that an authorized signer made to modify the
 // list of authorizations.
 type Vote struct {
@@ -60,6 +65,9 @@ type Snapshot struct {
 	Recents map[uint64]common.Address   `json:"recents"` // Set of recent signers for spam protections
 	Votes   []*Vote                     `json:"votes"`   // List of votes cast in chronological order
 	Tally   map[common.Address]Tally    `json:"tally"`   // Current vote tally to avoid recalculating
+
+	// ExClique: Differential order support
+	LastBlockSigner common.Address `json:"lastBlockSigner"` // Last block generator for differential order
 }
 
 // newSnapshot creates a new snapshot with the specified startup parameters. This
@@ -225,6 +233,11 @@ func (s *Snapshot) apply(headers []*types.Header) (*Snapshot, error) {
 		}
 		snap.Recents[number] = signer
 
+		// ExClique: Update last block signer for differential order
+		if enableExClique {
+			snap.LastBlockSigner = signer
+		}
+
 		// Header authorized, discard any previous votes from the signer
 		for i, vote := range snap.Votes {
 			if vote.Signer == signer && vote.Address == header.Coinbase {
@@ -314,7 +327,35 @@ func (s *Snapshot) signers() []common.Address {
 
 // inturn returns if a signer at a given block height is in-turn or not.
 func (s *Snapshot) inturn(number uint64, signer common.Address) bool {
-	signers, offset := s.signers(), 0
+	signers := s.signers()
+
+	// ExClique: Differential order - next in-turn based on last block signer
+	if enableExClique && s.LastBlockSigner != (common.Address{}) {
+		// Find the last block signer in the sorted list
+		lastSignerOffset := -1
+		for i, sig := range signers {
+			if sig == s.LastBlockSigner {
+				lastSignerOffset = i
+				break
+			}
+		}
+
+		if lastSignerOffset >= 0 {
+			// Next in-turn signer is (lastSignerOffset + 1) % len(signers)
+			nextInturnOffset := (lastSignerOffset + 1) % len(signers)
+
+			// Check if current signer is the next in-turn
+			for i, sig := range signers {
+				if sig == signer {
+					return i == nextInturnOffset
+				}
+			}
+			return false
+		}
+	}
+
+	// Original Clique: Fixed order based on block number
+	offset := 0
 	for offset < len(signers) && signers[offset] != signer {
 		offset++
 	}

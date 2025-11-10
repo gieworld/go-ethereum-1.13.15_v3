@@ -52,6 +52,10 @@ const (
 	inmemorySignatures = 4096 // Number of recent block signatures to keep in memory
 
 	wiggleTime = 500 * time.Millisecond // Random delay (per signer) to allow concurrent signers
+
+	// ExClique: Enhanced parameters for optimization
+	enableExClique = true // Enable ExClique optimizations
+	shortIDLength  = 6    // Short transaction ID length for compact blocks (6 bytes)
 )
 
 // Clique proof-of-authority protocol constants.
@@ -183,6 +187,17 @@ type Clique struct {
 	signFn SignerFn       // Signer function to authorize hashes with
 	lock   sync.RWMutex   // Protects the signer and proposals fields
 
+	// ExClique: Fields for optimization
+	lastBroadcastTime  time.Duration // Last broadcast time for accurate delay range
+	lastVerifyTime     time.Duration // Last verification time for accurate delay range
+	lastBlockGenerator common.Address // Last block generator for differential order
+	timeLock           sync.RWMutex   // Protects timing fields
+
+	// ExClique: PCB Protocol fields
+	txPoolCBF       *CountingBloomFilter            // Local transaction pool tracking
+	peerCBFs        map[common.Address]*CountingBloomFilter // Peer CBF cache
+	cbfLock         sync.RWMutex                    // Protects CBF fields
+
 	// The fields below are for testing only
 	fakeDiff bool // Skip difficulty verifications
 }
@@ -199,13 +214,22 @@ func New(config *params.CliqueConfig, db ethdb.Database) *Clique {
 	recents := lru.NewCache[common.Hash, *Snapshot](inmemorySnapshots)
 	signatures := lru.NewCache[common.Hash, common.Address](inmemorySignatures)
 
-	return &Clique{
+	c := &Clique{
 		config:     &conf,
 		db:         db,
 		recents:    recents,
 		signatures: signatures,
 		proposals:  make(map[common.Address]bool),
 	}
+
+	// ExClique: Initialize PCB protocol components
+	if enableExClique {
+		c.txPoolCBF = NewCountingBloomFilter()
+		c.peerCBFs = make(map[common.Address]*CountingBloomFilter)
+		log.Info("ExClique PCB protocol initialized")
+	}
+
+	return c
 }
 
 // Author implements consensus.Engine, returning the Ethereum address recovered
@@ -651,9 +675,29 @@ func (c *Clique) Seal(chain consensus.ChainHeaderReader, block *types.Block, res
 	if header.Difficulty.Cmp(diffNoTurn) == 0 {
 		// It's not our turn explicitly to sign, delay it a bit
 		wiggle := time.Duration(len(snap.Signers)/2+1) * wiggleTime
-		delay += time.Duration(rand.Int63n(int64(wiggle)))
 
-		log.Trace("Out-of-turn signing requested", "wiggle", common.PrettyDuration(wiggle))
+		if enableExClique {
+			// ExClique: Accurate delay range to minimize forks
+			// Use measured broadcast + verify time as lower bound (beta)
+			c.timeLock.RLock()
+			beta := c.lastBroadcastTime + c.lastVerifyTime
+			c.timeLock.RUnlock()
+
+			// Random delay from (beta, wiggle) instead of (0, wiggle)
+			if beta < wiggle {
+				remainingWiggle := wiggle - beta
+				delay += beta + time.Duration(rand.Int63n(int64(remainingWiggle)))
+				log.Trace("ExClique out-of-turn signing with accurate delay", "beta", common.PrettyDuration(beta), "wiggle", common.PrettyDuration(wiggle))
+			} else {
+				// If beta >= wiggle, use small random delay to avoid collision
+				delay += wiggle + time.Duration(rand.Int63n(int64(wiggleTime)))
+				log.Trace("ExClique out-of-turn signing (beta exceeds wiggle)", "beta", common.PrettyDuration(beta))
+			}
+		} else {
+			// Original Clique behavior
+			delay += time.Duration(rand.Int63n(int64(wiggle)))
+			log.Trace("Out-of-turn signing requested", "wiggle", common.PrettyDuration(wiggle))
+		}
 	}
 	// Sign all the things!
 	sighash, err := signFn(accounts.Account{Address: signer}, accounts.MimetypeClique, CliqueRLP(header))
@@ -710,6 +754,88 @@ func (c *Clique) SealHash(header *types.Header) common.Hash {
 // Close implements consensus.Engine. It's a noop for clique as there are no background threads.
 func (c *Clique) Close() error {
 	return nil
+}
+
+// ExClique: PCB Protocol Helper Methods
+
+// AddTransactionToCBF adds a transaction to the local CBF
+func (c *Clique) AddTransactionToCBF(txHash common.Hash) {
+	if !enableExClique || c.txPoolCBF == nil {
+		return
+	}
+
+	c.cbfLock.Lock()
+	defer c.cbfLock.Unlock()
+
+	c.txPoolCBF.Add(txHash)
+}
+
+// RemoveTransactionFromCBF removes a transaction from the local CBF
+func (c *Clique) RemoveTransactionFromCBF(txHash common.Hash) {
+	if !enableExClique || c.txPoolCBF == nil {
+		return
+	}
+
+	c.cbfLock.Lock()
+	defer c.cbfLock.Unlock()
+
+	c.txPoolCBF.Remove(txHash)
+}
+
+// GetLocalCBF returns a copy of the local transaction pool CBF
+func (c *Clique) GetLocalCBF() *CountingBloomFilter {
+	if !enableExClique || c.txPoolCBF == nil {
+		return nil
+	}
+
+	c.cbfLock.RLock()
+	defer c.cbfLock.RUnlock()
+
+	// Return the existing CBF (thread-safe as CBF has internal locks)
+	return c.txPoolCBF
+}
+
+// UpdatePeerCBF updates the CBF for a specific peer
+func (c *Clique) UpdatePeerCBF(peerAddr common.Address, cbf *CountingBloomFilter) {
+	if !enableExClique || cbf == nil {
+		return
+	}
+
+	c.cbfLock.Lock()
+	defer c.cbfLock.Unlock()
+
+	c.peerCBFs[peerAddr] = cbf
+	log.Trace("Updated peer CBF", "peer", peerAddr.Hex())
+}
+
+// GetPeerCBF retrieves the CBF for a specific peer
+func (c *Clique) GetPeerCBF(peerAddr common.Address) *CountingBloomFilter {
+	if !enableExClique {
+		return nil
+	}
+
+	c.cbfLock.RLock()
+	defer c.cbfLock.RUnlock()
+
+	return c.peerCBFs[peerAddr]
+}
+
+// UpdateBroadcastTime updates the last measured broadcast time
+func (c *Clique) UpdateBroadcastTime(duration time.Duration) {
+	c.timeLock.Lock()
+	defer c.timeLock.Unlock()
+
+	c.lastBroadcastTime = duration
+	log.Trace("Updated broadcast time", "duration", duration)
+}
+
+// UpdateVerifyTime updates the last measured verification time
+func (c *Clique) UpdateVerifyTime(duration time.Duration) {
+	c.timeLock.Lock()
+	defer c.timeLock.Unlock()
+
+	c.lastVerifyTime = duration
+	log.Trace("Updated verify time", "duration", duration)
 }
 
 // APIs implements consensus.Engine, returning the user facing RPC API to allow
