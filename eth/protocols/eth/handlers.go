@@ -482,3 +482,56 @@ func handlePooledTransactions(backend Backend, msg Decoder, peer *Peer) error {
 
 	return backend.Handle(peer, &txs.PooledTransactionsResponse)
 }
+
+// ExClique: PCB Protocol Message Handlers
+
+func handleExCliqueCBF(backend Backend, msg Decoder, peer *Peer) error {
+	// Decode the CBF packet
+	var cbfPacket ExCliqueCBFPacket
+	if err := msg.Decode(&cbfPacket); err != nil {
+		return fmt.Errorf("%w: message %v: %v", errDecode, msg, err)
+	}
+
+	// Update the peer's CBF
+	peer.UpdatePeerCBF(cbfPacket.CBFData)
+
+	log.Trace("Received CBF from peer", "peer", peer.ID(), "size", len(cbfPacket.CBFData))
+	return nil
+}
+
+func handleExCliqueCompactBlock(backend Backend, msg Decoder, peer *Peer) error {
+	// Decode the compact block packet
+	var pcbPacket ExCliqueCompactBlockPacket
+	if err := msg.Decode(&pcbPacket); err != nil {
+		return fmt.Errorf("%w: message %v: %v", errDecode, msg, err)
+	}
+
+	log.Trace("Received compact block from peer", "peer", peer.ID(), "size", len(pcbPacket.PCBData))
+
+	// Forward to backend for PCB decoding and block reconstruction
+	return backend.HandleCompactBlock(peer, pcbPacket.PCBData, pcbPacket.TD)
+}
+
+func handleExCliqueGetMissingTxs(backend Backend, msg Decoder, peer *Peer) error {
+	// Decode the missing transaction request
+	var req ExCliqueGetMissingTxsPacket
+	if err := msg.Decode(&req); err != nil {
+		return fmt.Errorf("%w: message %v: %v", errDecode, msg, err)
+	}
+
+	log.Trace("Received missing tx request from peer", "peer", peer.ID(), "count", len(req.TxHashes))
+
+	// Fetch the requested transactions from TX-Pool
+	var txs []*types.Transaction
+	for _, hash := range req.TxHashes {
+		if tx := backend.TxPool().Get(hash); tx != nil {
+			txs = append(txs, tx)
+		}
+	}
+
+	// Send the transactions back to peer
+	if len(txs) > 0 {
+		return peer.SendTransactions(txs)
+	}
+	return nil
+}

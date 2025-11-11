@@ -88,6 +88,11 @@ type Peer struct {
 	reqCancel   chan *cancel   // Dispatch channel to cancel pending requests and untrack them
 	resDispatch chan *response // Dispatch channel to fulfil pending requests and untrack them
 
+	// ExClique: PCB Protocol fields
+	peerCBF     []byte        // Cached CBF from this peer (serialized)
+	cbfLastSent int64         // Timestamp when we last sent our CBF to this peer
+	cbfLock     sync.RWMutex  // Mutex protecting CBF fields
+
 	term chan struct{} // Termination channel to stop the broadcasters
 	lock sync.RWMutex  // Mutex protecting the internal fields
 }
@@ -490,4 +495,62 @@ func (k *knownCache) Contains(hash common.Hash) bool {
 // Cardinality returns the number of elements in the set.
 func (k *knownCache) Cardinality() int {
 	return k.hashes.Cardinality()
+}
+
+// ExClique: PCB Protocol Methods
+
+// SendCBF sends the local Counting Bloom Filter to the peer
+func (p *Peer) SendCBF(cbfData []byte) error {
+	return p2p.Send(p.rw, ExCliqueCBFMsg, &ExCliqueCBFPacket{
+		CBFData: cbfData,
+	})
+}
+
+// SendCompactBlock sends a compact block to the peer
+func (p *Peer) SendCompactBlock(pcbData []byte, td *big.Int) error {
+	return p2p.Send(p.rw, ExCliqueCompactBlockMsg, &ExCliqueCompactBlockPacket{
+		PCBData: pcbData,
+		TD:      td,
+	})
+}
+
+// RequestMissingTransactions requests missing transactions by hash
+func (p *Peer) RequestMissingTransactions(txHashes []common.Hash) error {
+	return p2p.Send(p.rw, ExCliqueGetMissingTxsMsg, &ExCliqueGetMissingTxsPacket{
+		TxHashes: txHashes,
+	})
+}
+
+// UpdatePeerCBF updates the cached CBF from this peer
+func (p *Peer) UpdatePeerCBF(cbfData []byte) {
+	p.cbfLock.Lock()
+	defer p.cbfLock.Unlock()
+	p.peerCBF = cbfData
+}
+
+// GetPeerCBF retrieves the cached CBF from this peer
+func (p *Peer) GetPeerCBF() []byte {
+	p.cbfLock.RLock()
+	defer p.cbfLock.RUnlock()
+	if p.peerCBF == nil {
+		return nil
+	}
+	// Return a copy to prevent external modification
+	cbfCopy := make([]byte, len(p.peerCBF))
+	copy(cbfCopy, p.peerCBF)
+	return cbfCopy
+}
+
+// UpdateCBFLastSent updates the timestamp when we last sent CBF to this peer
+func (p *Peer) UpdateCBFLastSent(timestamp int64) {
+	p.cbfLock.Lock()
+	defer p.cbfLock.Unlock()
+	p.cbfLastSent = timestamp
+}
+
+// GetCBFLastSent retrieves the timestamp when we last sent CBF to this peer
+func (p *Peer) GetCBFLastSent() int64 {
+	p.cbfLock.RLock()
+	defer p.cbfLock.RUnlock()
+	return p.cbfLastSent
 }

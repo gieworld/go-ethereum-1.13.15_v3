@@ -81,6 +81,9 @@ type Backend interface {
 	// the remote peer. Only packets not consumed by the protocol handler will
 	// be forwarded to the backend.
 	Handle(peer *Peer, packet Packet) error
+
+	// ExClique: HandleCompactBlock processes a received compact block
+	HandleCompactBlock(peer *Peer, pcbData []byte, td *big.Int) error
 }
 
 // TxPool defines the methods needed by the protocol handler to serve transactions.
@@ -175,6 +178,11 @@ var eth68 = map[uint64]msgHandler{
 	ReceiptsMsg:                   handleReceipts,
 	GetPooledTransactionsMsg:      handleGetPooledTransactions,
 	PooledTransactionsMsg:         handlePooledTransactions,
+
+	// ExClique: PCB Protocol handlers
+	ExCliqueCBFMsg:                handleExCliqueCBF,
+	ExCliqueCompactBlockMsg:       handleExCliqueCompactBlock,
+	ExCliqueGetMissingTxsMsg:      handleExCliqueGetMissingTxs,
 }
 
 // handleMessage is invoked whenever an inbound message is received from a remote

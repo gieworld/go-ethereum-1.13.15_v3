@@ -43,7 +43,7 @@ var ProtocolVersions = []uint{ETH68}
 
 // protocolLengths are the number of implemented message corresponding to
 // different protocol versions.
-var protocolLengths = map[uint]uint64{ETH68: 17}
+var protocolLengths = map[uint]uint64{ETH68: 20}
 
 // maxMessageSize is the maximum cap on the size of a protocol message.
 const maxMessageSize = 10 * 1024 * 1024
@@ -62,6 +62,11 @@ const (
 	PooledTransactionsMsg         = 0x0a
 	GetReceiptsMsg                = 0x0f
 	ReceiptsMsg                   = 0x10
+
+	// ExClique: PCB Protocol Messages
+	ExCliqueCBFMsg                = 0x11 // CBF exchange message
+	ExCliqueCompactBlockMsg       = 0x12 // Compact block broadcast message
+	ExCliqueGetMissingTxsMsg      = 0x13 // Request missing transactions
 )
 
 var (
@@ -356,3 +361,30 @@ func (*GetReceiptsRequest) Kind() byte   { return GetReceiptsMsg }
 
 func (*ReceiptsResponse) Name() string { return "Receipts" }
 func (*ReceiptsResponse) Kind() byte   { return ReceiptsMsg }
+
+// ExClique: PCB Protocol Packet Types
+
+// ExCliqueCBFPacket represents a Counting Bloom Filter broadcast
+type ExCliqueCBFPacket struct {
+	CBFData []byte // Serialized CountingBloomFilter
+}
+
+func (*ExCliqueCBFPacket) Name() string { return "ExCliqueCBF" }
+func (*ExCliqueCBFPacket) Kind() byte   { return ExCliqueCBFMsg }
+
+// ExCliqueCompactBlockPacket represents a compact block broadcast
+type ExCliqueCompactBlockPacket struct {
+	PCBData []byte   // Serialized ProactiveCompactBlock
+	TD      *big.Int // Total difficulty
+}
+
+func (*ExCliqueCompactBlockPacket) Name() string { return "ExCliqueCompactBlock" }
+func (*ExCliqueCompactBlockPacket) Kind() byte   { return ExCliqueCompactBlockMsg }
+
+// ExCliqueGetMissingTxsPacket requests missing transactions by hash
+type ExCliqueGetMissingTxsPacket struct {
+	TxHashes []common.Hash // Transaction hashes that are missing
+}
+
+func (*ExCliqueGetMissingTxsPacket) Name() string { return "ExCliqueGetMissingTxs" }
+func (*ExCliqueGetMissingTxsPacket) Kind() byte   { return ExCliqueGetMissingTxsMsg }
