@@ -8,6 +8,7 @@ package clique
 import (
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -22,6 +23,9 @@ var (
 )
 
 // CompactTransaction represents either a full transaction or a short ID
+// NOTE: RLP encoding is handled at the ProactiveCompactBlock level
+// - If IsShort=true: Only ShortID is transmitted (6 bytes)
+// - If IsShort=false: Full transaction is RLP-encoded and transmitted
 type CompactTransaction struct {
 	IsShort bool                // true if this is a short ID, false if full transaction
 	ShortID []byte              // 6-byte short ID (only if IsShort = true)
@@ -33,6 +37,79 @@ type ProactiveCompactBlock struct {
 	Header       *types.Header        // Block header
 	Transactions []CompactTransaction // Mix of short IDs and full transactions
 	Uncles       []*types.Header      // Uncle headers (unchanged)
+}
+
+// EncodeRLP implements rlp.Encoder for ProactiveCompactBlock
+func (pcb *ProactiveCompactBlock) EncodeRLP(w io.Writer) error {
+	// Manually encode each CompactTransaction
+	type encodableTx struct {
+		IsShort bool
+		ShortID []byte
+		TxBytes []byte
+	}
+
+	encodableTxs := make([]encodableTx, len(pcb.Transactions))
+	for i, ct := range pcb.Transactions {
+		var txBytes []byte
+		if !ct.IsShort && ct.Tx != nil {
+			var err error
+			txBytes, err = rlp.EncodeToBytes(ct.Tx)
+			if err != nil {
+				return err
+			}
+		}
+		encodableTxs[i] = encodableTx{
+			IsShort: ct.IsShort,
+			ShortID: ct.ShortID,
+			TxBytes: txBytes,
+		}
+	}
+
+	return rlp.Encode(w, []interface{}{
+		pcb.Header,
+		encodableTxs,
+		pcb.Uncles,
+	})
+}
+
+// DecodeRLP implements rlp.Decoder for ProactiveCompactBlock
+func (pcb *ProactiveCompactBlock) DecodeRLP(s *rlp.Stream) error {
+	type encodableTx struct {
+		IsShort bool
+		ShortID []byte
+		TxBytes []byte
+	}
+
+	var temp struct {
+		Header       *types.Header
+		Transactions []encodableTx
+		Uncles       []*types.Header
+	}
+
+	if err := s.Decode(&temp); err != nil {
+		return err
+	}
+
+	pcb.Header = temp.Header
+	pcb.Uncles = temp.Uncles
+	pcb.Transactions = make([]CompactTransaction, len(temp.Transactions))
+
+	for i, et := range temp.Transactions {
+		pcb.Transactions[i].IsShort = et.IsShort
+		pcb.Transactions[i].ShortID = et.ShortID
+
+		if !et.IsShort && len(et.TxBytes) > 0 {
+			var tx types.Transaction
+			if err := rlp.DecodeBytes(et.TxBytes, &tx); err != nil {
+				return err
+			}
+			pcb.Transactions[i].Tx = &tx
+		} else {
+			pcb.Transactions[i].Tx = nil
+		}
+	}
+
+	return nil
 }
 
 // TxPoolInterface defines the interface for accessing transaction pool
