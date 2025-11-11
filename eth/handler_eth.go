@@ -76,15 +76,15 @@ func (h *ethHandler) HandleCompactBlock(peer *eth.Peer, pcbData []byte, td *big.
 	txPoolAdapter := &txPoolAdapter{pool: h.txpool}
 
 	// Decode PCB using local TX-Pool
-	block, missingTxHashes, err := clique.DecodeProactiveCompactBlock(pcb, txPoolAdapter)
+	block, _, err := clique.DecodeProactiveCompactBlock(pcb, txPoolAdapter)
 
 	if err != nil {
-		// Check if error is due to missing transactions
-		if len(missingTxHashes) > 0 {
-			// Request missing transactions from peer
-			peer.RequestMissingTransactions(missingTxHashes)
-			return fmt.Errorf("compact block missing %d transactions, requested from peer", len(missingTxHashes))
-		}
+		// Decode failed - peer will need to send full block
+		// This can happen if:
+		// 1. CBF false positive (we don't actually have the TX)
+		// 2. TX was removed from pool after CBF sync
+		// 3. Short ID collision (very rare)
+		// Peer should fallback to sending full block on next attempt
 		return fmt.Errorf("failed to decode compact block: %w", err)
 	}
 

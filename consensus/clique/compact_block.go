@@ -167,7 +167,6 @@ func DecodeProactiveCompactBlock(pcb *ProactiveCompactBlock, txPool TxPoolInterf
 	}
 
 	transactions := make([]*types.Transaction, len(pcb.Transactions))
-	missingTxHashes := []common.Hash{}
 
 	for i, compactTx := range pcb.Transactions {
 		if compactTx.IsShort {
@@ -177,10 +176,10 @@ func DecodeProactiveCompactBlock(pcb *ProactiveCompactBlock, txPool TxPoolInterf
 			if found {
 				transactions[i] = tx
 			} else {
-				// Transaction not found - need to request it
-				// For now, we'll record it as missing
-				missingTxHashes = append(missingTxHashes, common.BytesToHash(compactTx.ShortID))
-				return nil, missingTxHashes, errMissingTransaction
+				// Transaction not found
+				// We cannot reconstruct the full hash from short ID
+				// Return error and let peer send full block
+				return nil, nil, fmt.Errorf("transaction with short ID %x not found in local pool", compactTx.ShortID)
 			}
 		} else {
 			// Full transaction provided

@@ -9,6 +9,7 @@ package clique
 import (
 	"bytes"
 	"math/big"
+	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -376,14 +377,12 @@ func TestPCBDecodingMissingTransaction(t *testing.T) {
 	}
 
 	// Decode PCB - should fail with missing transaction
-	_, missingTxs, err := DecodeProactiveCompactBlock(pcb, pool)
+	_, _, err = DecodeProactiveCompactBlock(pcb, pool)
 	if err == nil {
 		t.Fatal("Expected error when transaction missing, got nil")
 	}
-	if err != errMissingTransaction {
-		t.Errorf("Expected errMissingTransaction, got: %v", err)
-	}
-	if len(missingTxs) == 0 {
-		t.Error("Expected missing transaction list to be non-empty")
+	// Error should indicate the short ID that wasn't found
+	if err != nil && !strings.Contains(err.Error(), "not found in local pool") {
+		t.Errorf("Expected 'not found in local pool' error, got: %v", err)
 	}
 }
