@@ -1083,6 +1083,27 @@ func (pool *LegacyPool) Has(hash common.Hash) bool {
 	return pool.all.Get(hash) != nil
 }
 
+// GetAllTxs returns all transactions in the pool (for ExClique PCB protocol)
+// This is needed for short ID lookup in Proactive Compact Block decoding
+func (pool *LegacyPool) GetAllTxs() map[common.Hash]*types.Transaction {
+	pool.all.lock.RLock()
+	defer pool.all.lock.RUnlock()
+
+	allTxs := make(map[common.Hash]*types.Transaction)
+
+	// Copy all local transactions
+	for hash, tx := range pool.all.locals {
+		allTxs[hash] = tx
+	}
+
+	// Copy all remote transactions
+	for hash, tx := range pool.all.remotes {
+		allTxs[hash] = tx
+	}
+
+	return allTxs
+}
+
 // removeTx removes a single transaction from the queue, moving all subsequent
 // transactions back to the future queue.
 //
