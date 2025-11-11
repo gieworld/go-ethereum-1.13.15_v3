@@ -31,10 +31,8 @@ import (
 	"golang.org/x/exp/slices"
 )
 
-const (
-	// ExClique: Enable differential order and other optimizations
-	enableExClique = true
-)
+// ExClique: enableExClique is declared in clique.go
+// const enableExClique is shared across all clique package files
 
 // Vote represents a single vote that an authorized signer made to modify the
 // list of authorizations.

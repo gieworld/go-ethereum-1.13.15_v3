@@ -791,14 +791,6 @@ func (pool *LegacyPool) add(tx *types.Transaction, local bool) (replaced bool, e
 		pool.journalTx(from, tx)
 		pool.queueTxEvent(tx)
 
-		// ExClique: Update CBF when transaction is added to pool
-		if engine := pool.chain.Engine(); engine != nil {
-			if cliqueEngine, ok := engine.(interface {
-				AddTransactionToCBF(common.Hash)
-			}); ok {
-				cliqueEngine.AddTransactionToCBF(hash)
-			}
-		}
 
 		log.Trace("Pooled new executable transaction", "hash", hash, "from", from, "to", tx.To())
 
@@ -821,16 +813,6 @@ func (pool *LegacyPool) add(tx *types.Transaction, local bool) (replaced bool, e
 		localGauge.Inc(1)
 	}
 	pool.journalTx(from, tx)
-
-	// ExClique: Update CBF when transaction is added to pool
-	if engine := pool.chain.Engine(); engine != nil {
-		if cliqueEngine, ok := engine.(interface {
-			AddTransactionToCBF(common.Hash)
-		}); ok {
-			cliqueEngine.AddTransactionToCBF(hash)
-		}
-	}
-
 	log.Trace("Pooled new future transaction", "hash", hash, "from", from, "to", tx.To())
 	return replaced, nil
 }
@@ -1170,16 +1152,6 @@ func (pool *LegacyPool) removeTx(hash common.Hash, outofbound bool, unreserve bo
 			delete(pool.beats, addr)
 		}
 	}
-
-	// ExClique: Update CBF when transaction is removed from pool
-	if engine := pool.chain.Engine(); engine != nil {
-		if cliqueEngine, ok := engine.(interface {
-			RemoveTransactionFromCBF(common.Hash)
-		}); ok {
-			cliqueEngine.RemoveTransactionFromCBF(hash)
-		}
-	}
-
 	return 0
 }
 

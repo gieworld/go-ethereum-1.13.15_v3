@@ -6,7 +6,6 @@
 package clique
 
 import (
-	"encoding/binary"
 	"hash/fnv"
 	"sync"
 
