@@ -589,6 +589,9 @@ func (h *handler) BroadcastBlock(block *types.Block, propagate bool) {
 		// Send the block to a subset of our peers
 		transfer := peers[:int(math.Sqrt(float64(len(peers))))]
 
+		// ExClique: Measure actual broadcast time
+		broadcastStart := time.Now()
+
 		// ExClique: Try to use PCB (Proactive Compact Block) if Clique consensus is active
 		if _, ok := h.chain.Engine().(*clique.Clique); ok {
 			// PCB Protocol: Send compact blocks instead of full blocks
@@ -641,6 +644,12 @@ func (h *handler) BroadcastBlock(block *types.Block, propagate bool) {
 			for _, peer := range transfer {
 				peer.AsyncSendNewBlock(block, td)
 			}
+		}
+
+		// ExClique: Update broadcast time measurement
+		broadcastDuration := time.Since(broadcastStart)
+		if cliqueEngine, ok := h.chain.Engine().(*clique.Clique); ok {
+			cliqueEngine.UpdateBroadcastTime(broadcastDuration)
 		}
 
 		log.Trace("Propagated block", "hash", hash, "recipients", len(transfer), "duration", common.PrettyDuration(time.Since(block.ReceivedAt)))

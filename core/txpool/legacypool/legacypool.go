@@ -231,6 +231,9 @@ type LegacyPool struct {
 	initDoneCh      chan struct{}  // is closed once the pool is initialized (for tests)
 
 	changesSinceReorg int // A counter for how many drops we've performed in-between reorg.
+
+	// ExClique: CBF update callback
+	cbfCallback func(txHash common.Hash, add bool)
 }
 
 type txpoolResetRequest struct {
@@ -791,6 +794,8 @@ func (pool *LegacyPool) add(tx *types.Transaction, local bool) (replaced bool, e
 		pool.journalTx(from, tx)
 		pool.queueTxEvent(tx)
 
+		// ExClique: Update CBF when TX added to pending
+		pool.updateCBF(hash, true)
 
 		log.Trace("Pooled new executable transaction", "hash", hash, "from", from, "to", tx.To())
 
@@ -813,6 +818,10 @@ func (pool *LegacyPool) add(tx *types.Transaction, local bool) (replaced bool, e
 		localGauge.Inc(1)
 	}
 	pool.journalTx(from, tx)
+
+	// ExClique: Update CBF when TX added to queue
+	pool.updateCBF(hash, true)
+
 	log.Trace("Pooled new future transaction", "hash", hash, "from", from, "to", tx.To())
 	return replaced, nil
 }
@@ -1140,6 +1149,9 @@ func (pool *LegacyPool) removeTx(hash common.Hash, outofbound bool, unreserve bo
 	if outofbound {
 		pool.priced.Removed(1)
 	}
+
+	// ExClique: Update CBF when TX removed from pool
+	pool.updateCBF(hash, false)
 	if pool.locals.contains(addr) {
 		localGauge.Dec(1)
 	}
@@ -1980,4 +1992,18 @@ func (t *lookup) RemotesBelowTip(threshold *big.Int) types.Transactions {
 // numSlots calculates the number of slots needed for a single transaction.
 func numSlots(tx *types.Transaction) int {
 	return int((tx.Size() + txSlotSize - 1) / txSlotSize)
+}
+
+// SetCBFCallback sets the callback for CBF updates (called by eth backend)
+func (pool *LegacyPool) SetCBFCallback(callback func(txHash common.Hash, add bool)) {
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	pool.cbfCallback = callback
+}
+
+// updateCBF updates the Clique CBF when transactions are added/removed
+func (pool *LegacyPool) updateCBF(hash common.Hash, add bool) {
+	if pool.cbfCallback != nil {
+		pool.cbfCallback(hash, add)
+	}
 }

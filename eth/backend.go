@@ -229,6 +229,17 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 	}
 	legacyPool := legacypool.New(config.TxPool, eth.blockchain)
 
+	// ExClique: Setup CBF callback for TX-Pool updates
+	if cliqueEngine, ok := eth.engine.(*clique.Clique); ok {
+		legacyPool.SetCBFCallback(func(txHash common.Hash, add bool) {
+			if add {
+				cliqueEngine.AddTransactionToCBF(txHash)
+			} else {
+				cliqueEngine.RemoveTransactionFromCBF(txHash)
+			}
+		})
+	}
+
 	eth.txPool, err = txpool.New(config.TxPool.PriceLimit, eth.blockchain, []txpool.SubPool{legacyPool, blobPool})
 	if err != nil {
 		return nil, err

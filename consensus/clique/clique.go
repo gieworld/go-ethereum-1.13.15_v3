@@ -914,3 +914,4 @@ func encodeSigHeader(w io.Writer, header *types.Header) {
 		panic("can't encode: " + err.Error())
 	}
 }
+
