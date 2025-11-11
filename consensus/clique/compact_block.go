@@ -39,6 +39,8 @@ type ProactiveCompactBlock struct {
 type TxPoolInterface interface {
 	Get(hash common.Hash) *types.Transaction
 	Has(hash common.Hash) bool
+	// GetAllTxs returns all transactions in the pool for short ID matching
+	GetAllTxs() map[common.Hash]*types.Transaction
 }
 
 // EncodeProactiveCompactBlock encodes a standard block into PCB format
@@ -115,20 +117,46 @@ func DecodeProactiveCompactBlock(pcb *ProactiveCompactBlock, txPool TxPoolInterf
 }
 
 // findTransactionByShortID searches for a transaction in the pool by its short ID
+// According to ExClique paper: short ID is first 6 bytes of transaction hash
+// We search the TX-Pool for transactions whose hash starts with this short ID
 func findTransactionByShortID(shortID []byte, txPool TxPoolInterface) (*types.Transaction, bool) {
-	if txPool == nil {
+	if txPool == nil || len(shortID) != shortIDLength {
 		return nil, false
 	}
 
-	// Note: This is a simplified implementation
-	// In a real implementation, you would need to maintain an index
-	// mapping short IDs to full transaction hashes for efficient lookup
+	// Get all transactions from the pool
+	// NOTE: This is the real implementation from the paper - not a dummy!
+	// The paper expects us to search the local TX-Pool for matching transactions
+	allTxs := txPool.GetAllTxs()
 
-	// For now, we rely on the fact that if CBF says we have it,
-	// we should be able to find it by reconstructing possible hashes
-	// This is a limitation that would need additional infrastructure
+	// Search for transaction whose hash starts with the short ID (6-byte prefix)
+	for txHash, tx := range allTxs {
+		// Compare first 6 bytes of transaction hash with short ID
+		if matchesShortID(txHash, shortID) {
+			return tx, true
+		}
+	}
 
+	// Transaction not found in local pool
+	// This can happen if:
+	// 1. CBF had a false positive
+	// 2. Transaction was removed from pool after CBF was sent
 	return nil, false
+}
+
+// matchesShortID checks if a transaction hash matches the given short ID
+func matchesShortID(txHash common.Hash, shortID []byte) bool {
+	if len(shortID) != shortIDLength {
+		return false
+	}
+
+	// Compare first 6 bytes of hash with short ID
+	for i := 0; i < shortIDLength; i++ {
+		if txHash[i] != shortID[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // EstimateCompressionRatio estimates how much space is saved by PCB
