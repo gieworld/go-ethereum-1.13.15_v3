@@ -27,6 +27,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/consensus/beacon"
+	"github.com/ethereum/go-ethereum/consensus/clique"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/forkid"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -532,6 +533,12 @@ func (h *handler) Start(maxPeers int) {
 	// start peer handler tracker
 	h.wg.Add(1)
 	go h.protoTracker()
+
+	// ExClique: Start CBF synchronization loop if using Clique consensus
+	if _, ok := h.chain.Engine().(*clique.Clique); ok {
+		h.wg.Add(1)
+		go h.cbfSyncLoop()
+	}
 }
 
 func (h *handler) Stop() {
@@ -581,9 +588,61 @@ func (h *handler) BroadcastBlock(block *types.Block, propagate bool) {
 		}
 		// Send the block to a subset of our peers
 		transfer := peers[:int(math.Sqrt(float64(len(peers))))]
-		for _, peer := range transfer {
-			peer.AsyncSendNewBlock(block, td)
+
+		// ExClique: Try to use PCB (Proactive Compact Block) if Clique consensus is active
+		if _, ok := h.chain.Engine().(*clique.Clique); ok {
+			// PCB Protocol: Send compact blocks instead of full blocks
+			for _, peer := range transfer {
+				// Get peer's CBF
+				peerCBFData := peer.GetPeerCBF()
+				var receiverCBF *clique.CountingBloomFilter
+
+				if peerCBFData != nil && len(peerCBFData) > 0 {
+					// Peer has sent us their CBF, decode it
+					receiverCBF = clique.NewCountingBloomFilter()
+					if err := receiverCBF.Decode(peerCBFData); err != nil {
+						// CBF decode failed, fallback to full block
+						log.Trace("CBF decode failed, sending full block", "peer", peer.ID(), "err", err)
+						peer.AsyncSendNewBlock(block, td)
+						continue
+					}
+				}
+
+				// Encode block as PCB using receiver's CBF
+				pcb, err := clique.EncodeProactiveCompactBlock(block, receiverCBF)
+				if err != nil {
+					// Encoding failed, fallback to full block
+					log.Trace("PCB encoding failed, sending full block", "peer", peer.ID(), "err", err)
+					peer.AsyncSendNewBlock(block, td)
+					continue
+				}
+
+				// Serialize PCB for transmission
+				pcbData, err := clique.SerializeCompactBlock(pcb)
+				if err != nil {
+					// Serialization failed, fallback to full block
+					log.Trace("PCB serialization failed, sending full block", "peer", peer.ID(), "err", err)
+					peer.AsyncSendNewBlock(block, td)
+					continue
+				}
+
+				// Send compact block via P2P
+				if err := peer.SendCompactBlock(pcbData, td); err != nil {
+					// Send failed, peer might not support PCB
+					log.Trace("PCB send failed, sending full block", "peer", peer.ID(), "err", err)
+					peer.AsyncSendNewBlock(block, td)
+					continue
+				}
+
+				log.Trace("Sent compact block", "peer", peer.ID(), "block", hash, "pcbSize", len(pcbData))
+			}
+		} else {
+			// Not using Clique, use standard block broadcast
+			for _, peer := range transfer {
+				peer.AsyncSendNewBlock(block, td)
+			}
 		}
+
 		log.Trace("Propagated block", "hash", hash, "recipients", len(transfer), "duration", common.PrettyDuration(time.Since(block.ReceivedAt)))
 		return
 	}
@@ -669,6 +728,60 @@ func (h *handler) txBroadcastLoop() {
 		case event := <-h.txsCh:
 			h.BroadcastTransactions(event.Txs)
 		case <-h.txsSub.Err():
+			return
+		}
+	}
+}
+
+// cbfSyncLoop periodically broadcasts local CBF to all peers (ExClique PCB protocol)
+func (h *handler) cbfSyncLoop() {
+	defer h.wg.Done()
+
+	ticker := time.NewTicker(5 * time.Second) // Broadcast CBF every 5 seconds
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			// Get Clique engine
+			cliqueEngine, ok := h.chain.Engine().(*clique.Clique)
+			if !ok {
+				// Not using Clique anymore, exit loop
+				return
+			}
+
+			// Get local CBF from Clique engine
+			localCBF := cliqueEngine.GetLocalCBF()
+			if localCBF == nil {
+				log.Trace("CBF sync skipped: local CBF not available")
+				continue
+			}
+
+			// Encode CBF for transmission
+			cbfData, err := localCBF.Encode()
+			if err != nil {
+				log.Warn("Failed to encode local CBF", "err", err)
+				continue
+			}
+
+			// Broadcast to all connected peers
+			peers := h.peers.allPeers()
+			for _, peer := range peers {
+				// Send CBF to peer
+				if err := peer.SendCBF(cbfData); err != nil {
+					log.Trace("Failed to send CBF to peer", "peer", peer.ID(), "err", err)
+					continue
+				}
+
+				// Update timestamp
+				peer.UpdateCBFLastSent(time.Now().Unix())
+			}
+
+			if len(peers) > 0 {
+				log.Trace("Broadcast CBF to peers", "recipients", len(peers), "cbfSize", len(cbfData))
+			}
+
+		case <-h.quitSync:
 			return
 		}
 	}

@@ -23,7 +23,9 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/consensus/clique"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/txpool"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth/protocols/eth"
 	"github.com/ethereum/go-ethereum/p2p/enode"
@@ -53,6 +55,72 @@ func (h *ethHandler) PeerInfo(id enode.ID) interface{} {
 // or if inbound transactions should simply be dropped.
 func (h *ethHandler) AcceptTxs() bool {
 	return h.synced.Load()
+}
+
+// HandleCompactBlock processes a received ProactiveCompactBlock (ExClique PCB protocol)
+func (h *ethHandler) HandleCompactBlock(peer *eth.Peer, pcbData []byte, td *big.Int) error {
+	// Check if we're using Clique consensus
+	if _, ok := h.chain.Engine().(*clique.Clique); !ok {
+		// Not using Clique, fallback to standard block handling
+		// This shouldn't happen in ExClique network, but handle gracefully
+		return fmt.Errorf("compact block received but not using Clique consensus")
+	}
+
+	// Deserialize the compact block
+	pcb, err := clique.DeserializeCompactBlock(pcbData)
+	if err != nil {
+		return fmt.Errorf("failed to deserialize compact block: %w", err)
+	}
+
+	// Create a simple adapter for the TX-Pool interface
+	txPoolAdapter := &txPoolAdapter{pool: h.txpool}
+
+	// Decode PCB using local TX-Pool
+	block, missingTxHashes, err := clique.DecodeProactiveCompactBlock(pcb, txPoolAdapter)
+
+	if err != nil {
+		// Check if error is due to missing transactions
+		if len(missingTxHashes) > 0 {
+			// Request missing transactions from peer
+			peer.RequestMissingTransactions(missingTxHashes)
+			return fmt.Errorf("compact block missing %d transactions, requested from peer", len(missingTxHashes))
+		}
+		return fmt.Errorf("failed to decode compact block: %w", err)
+	}
+
+	// Successfully reconstructed block, process it normally
+	return h.handleBlockBroadcast(peer, block, td)
+}
+
+// txPoolAdapter adapts eth.txPool to clique.TxPoolInterface
+type txPoolAdapter struct {
+	pool txPool
+}
+
+func (a *txPoolAdapter) Get(hash common.Hash) *types.Transaction {
+	return a.pool.Get(hash)
+}
+
+func (a *txPoolAdapter) Has(hash common.Hash) bool {
+	return a.pool.Has(hash)
+}
+
+func (a *txPoolAdapter) GetAllTxs() map[common.Hash]*types.Transaction {
+	// Get pending transactions from the pool
+	// This is a simplified implementation - in production, you might want
+	// to cache this or implement more efficiently
+	pending := a.pool.Pending(txpool.PendingFilter{})
+
+	allTxs := make(map[common.Hash]*types.Transaction)
+	for _, txList := range pending {
+		for _, lazyTx := range txList {
+			tx := lazyTx.Resolve()
+			if tx != nil {
+				allTxs[tx.Hash()] = tx
+			}
+		}
+	}
+	return allTxs
 }
 
 // Handle is invoked from a peer's message handler when it receives a new remote
